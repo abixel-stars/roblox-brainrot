@@ -1,88 +1,83 @@
--- A square that moves with the arrow keys inside a grey box.
+--!nonstrict
+-- Game client: boots the UI, asks the server for the first state,
+-- and keeps the HUD fresh from the server's updates. Lock (L) and
+-- slap (F) are bound through ContextActionService so the default
+-- camera scripts never swallow them.
 
+local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local player = Players.LocalPlayer
+local UiBuilder = require(script.Parent.UiBuilder)
+local ClientFx = require(script.Parent.ClientFx)
 
-local ARENA_WIDTH = 640
-local ARENA_HEIGHT = 480
-local SQUARE_SIZE = 48
-local SPEED = 320 -- pixels per second
+local remotes = ReplicatedStorage:WaitForChild("BrainrotRemotes")
+local GameAction = remotes:WaitForChild("GameAction")
+local GameUpdate = remotes:WaitForChild("GameUpdate")
+local GetState = remotes:WaitForChild("GetState")
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "GameGui"
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
+ClientFx.Init()
 
-local background = Instance.new("Frame")
-background.Name = "Background"
-background.Size = UDim2.fromScale(1, 1)
-background.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-background.BorderSizePixel = 0
-background.Parent = gui
-
-local title = Instance.new("TextLabel")
-title.Name = "Hint"
-title.AnchorPoint = Vector2.new(0.5, 0)
-title.Position = UDim2.new(0.5, 0, 0.5, -ARENA_HEIGHT / 2 - 56)
-title.Size = UDim2.fromOffset(ARENA_WIDTH, 40)
-title.BackgroundTransparency = 1
-title.Text = "Use the arrow keys to move the square"
-title.TextColor3 = Color3.fromRGB(230, 230, 230)
-title.TextSize = 24
-title.Font = Enum.Font.SourceSans
-title.Parent = background
-
-local arena = Instance.new("Frame")
-arena.Name = "Arena"
-arena.AnchorPoint = Vector2.new(0.5, 0.5)
-arena.Position = UDim2.fromScale(0.5, 0.5)
-arena.Size = UDim2.fromOffset(ARENA_WIDTH, ARENA_HEIGHT)
-arena.BackgroundColor3 = Color3.fromRGB(110, 110, 110)
-arena.BorderColor3 = Color3.fromRGB(30, 30, 30)
-arena.BorderSizePixel = 2
-arena.Parent = background
-
-local square = Instance.new("Frame")
-square.Name = "Square"
-square.Size = UDim2.fromOffset(SQUARE_SIZE, SQUARE_SIZE)
-square.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
-square.BorderColor3 = Color3.fromRGB(30, 30, 30)
-square.BorderSizePixel = 2
-square.Parent = arena
-
--- The square's top-left corner inside the arena, starting in the middle.
-local x = (ARENA_WIDTH - SQUARE_SIZE) / 2
-local y = (ARENA_HEIGHT - SQUARE_SIZE) / 2
-
-local function place()
-	square.Position = UDim2.fromOffset(math.floor(x + 0.5), math.floor(y + 0.5))
+local function sendAction(name, args)
+	GameAction:FireServer(name, args or {})
 end
 
-place()
-gui.Parent = player:WaitForChild("PlayerGui")
+UiBuilder.Build(sendAction)
 
-RunService.RenderStepped:Connect(function(dt)
-	local dx = 0
-	local dy = 0
-	if UserInputService:IsKeyDown(Enum.KeyCode.Left) then
-		dx -= 1
+-- First state, with retries while the server is still waking up.
+task.spawn(function()
+	local snap = nil
+	for _ = 1, 20 do
+		local ok, result = pcall(function()
+			return GetState:InvokeServer()
+		end)
+		if ok and result then
+			snap = result
+			break
+		end
+		task.wait(0.5)
 	end
-	if UserInputService:IsKeyDown(Enum.KeyCode.Right) then
-		dx += 1
+	if snap then
+		UiBuilder.Refresh(snap)
+	else
+		UiBuilder.Toast("Server belum menjawab, coba lagi sebentar lagi.")
 	end
-	if UserInputService:IsKeyDown(Enum.KeyCode.Up) then
-		dy -= 1
-	end
-	if UserInputService:IsKeyDown(Enum.KeyCode.Down) then
-		dy += 1
-	end
-	if dx == 0 and dy == 0 then
+end)
+
+GameUpdate.OnClientEvent:Connect(function(payload)
+	if not payload then
 		return
 	end
-	x = math.clamp(x + dx * SPEED * dt, 0, ARENA_WIDTH - SQUARE_SIZE)
-	y = math.clamp(y + dy * SPEED * dt, 0, ARENA_HEIGHT - SQUARE_SIZE)
-	place()
+	if payload.Type == "State" then
+		UiBuilder.Refresh(payload)
+	elseif payload.Type == "Toast" then
+		UiBuilder.Toast(payload.Text)
+		ClientFx.PlayCoin()
+	end
 end)
+
+ContextActionService:BindAction("LockBase", function(_, inputState, _)
+	if inputState == Enum.UserInputState.Begin then
+		sendAction("LockBase", {})
+	end
+end, false, Enum.KeyCode.L)
+
+ContextActionService:BindAction("Slap", function(_, inputState, _)
+	if inputState == Enum.UserInputState.Begin then
+		sendAction("Slap", {})
+	end
+end, false, Enum.KeyCode.F)
+
+Players.LocalPlayer.CharacterAdded:Connect(function()
+	task.wait(1)
+	local snap = nil
+	local ok, result = pcall(function()
+		return GetState:InvokeServer()
+	end)
+	if ok and result then
+		snap = result
+		UiBuilder.Refresh(snap)
+	end
+end)
+
+print("Pasar Malam Brainrot: client siap.")
